@@ -1,85 +1,75 @@
-"""
-train.py
-
-Loads ECG data, builds engineered features, trains two models with GridSearchCV,
-then saves estimators and a summary CSV.
-"""
 import os
 import sys
-import joblib
+import argparse
+import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split, GridSearchCV
+import joblib
 
-# Add project src to path to import data_loading
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'src')))
+# Make sure src/ is on sys.path for imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from data_loading import load_dataset, summarize_signal, noise_ratio
-from model import get_random_forest_pipeline, get_mlp_pipeline
-
-# Hyperparameter grids
-PARAM_GRIDS = {
-    'rf': {
-        'clf__n_estimators': [100, 200],
-        'clf__max_depth': [None, 20]
-    },
-    'mlp': {
-        'clf__hidden_layer_sizes': [(50,), (100,)],
-        'clf__alpha': [0.0001, 0.001]
-    }
-}
+os.makedirs('../../models', exist_ok=True)
 
 
-def build_features(X_raw, y):
-    records = []
-    for sig, lbl in zip(X_raw, y):
-        feats = summarize_signal(sig)
-        feats['noise_ratio'] = noise_ratio(sig)
-        feats['label'] = lbl
-        records.append(feats)
-    df = pd.DataFrame(records)
-    return df.drop(columns=['label']), df['label']
+from data_loading import load_dataset
+from sklearn.model_selection import train_test_split
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', choices=['baseline', 'augment'], default='baseline',
+                        help='Which pipeline to use: baseline or augmented')
+    return parser.parse_args()
 
-def main(data_dir=None, model_dir=None):
-    # Derive project paths
-    script_dir = os.path.dirname(__file__)
-    project_root = os.path.abspath(os.path.join(script_dir, '..', '..'))
-    data_dir = data_dir or os.path.join(project_root, 'data')
-    model_dir = model_dir or os.path.join(project_root, 'models')
-    os.makedirs(model_dir, exist_ok=True)
+def main():
+    args = parse_args()
+    mode = args.mode
 
-    # Load data
-    X_train, y_train, _ = load_dataset(data_dir)
+    if mode == 'baseline':
+        from model import get_random_forest_pipeline, get_mlp_pipeline
+        rf_pipeline = get_random_forest_pipeline()
+        mlp_pipeline = get_mlp_pipeline()
+        rf_model_path = '../../models/rf_model.joblib'
+        mlp_model_path = '../../models/mlp_model.joblib'
+        summary_path = '../../models/training_summary.csv'
+    else:
+        from model import get_rf_augmented_pipeline, get_mlp_augmented_pipeline
+        rf_pipeline = get_rf_augmented_pipeline()
+        mlp_pipeline = get_mlp_augmented_pipeline()
+        rf_model_path = '../../models/rf_aug_model.joblib'
+        mlp_model_path = '../../models/mlp_aug_model.joblib'
+        summary_path = '../../models/training_aug_summary.csv'
 
-    # Feature engineering
-    X_feat, y_feat = build_features(X_train, y_train)
+    X_train, y_train, _ = load_dataset('data')
+    idx = np.arange(len(X_train))
+    train_idx, val_idx = train_test_split(idx, test_size=0.2, stratify=y_train, random_state=42)
+    X_tr = [X_train[i] for i in train_idx]
+    y_tr = y_train.iloc[train_idx].values
+    X_val = [X_train[i] for i in val_idx]
+    y_val = y_train.iloc[val_idx].values
 
-    # Train/validation split
-    X_tr, X_val, y_tr, y_val = train_test_split(
-        X_feat, y_feat, test_size=0.2, stratify=y_feat, random_state=42
-    )
+    # Fit and evaluate Random Forest
+    print(f"Training Random Forest ({mode})...")
+    rf_pipeline.fit(X_tr, y_tr)
+    val_rf_acc = rf_pipeline.score(X_val, y_val)
+    print(f"RF val accuracy: {val_rf_acc:.4f}")
+    joblib.dump(rf_pipeline, rf_model_path)
+    print(f"Saved {rf_model_path}")
 
-    results = {}
-    for name, pipeline_fn in [('rf', get_random_forest_pipeline), ('mlp', get_mlp_pipeline)]:
-        print(f"Training {name}...")
-        pipeline = pipeline_fn()
-        grid = GridSearchCV(pipeline, PARAM_GRIDS[name], cv=3, n_jobs=-1, scoring='accuracy')
-        grid.fit(X_tr, y_tr)
-        best = grid.best_estimator_
-        val_score = best.score(X_val, y_val)
-        results[name] = {
-            'best_params': grid.best_params_,
-            'train_score': grid.best_score_,
-            'val_score': val_score
-        }
-        # Save model
-        joblib.dump(best, os.path.join(model_dir, f"{name}_model.joblib"))
-        print(f"Saved {name}_model.joblib with val_score={val_score:.4f}")
+    # Fit and evaluate MLP
+    print(f"Training MLP ({mode})...")
+    mlp_pipeline.fit(X_tr, y_tr)
+    val_mlp_acc = mlp_pipeline.score(X_val, y_val)
+    print(f"MLP val accuracy: {val_mlp_acc:.4f}")
+    joblib.dump(mlp_pipeline, mlp_model_path)
+    print(f"Saved {mlp_model_path}")
 
-    # Save summary
-    pd.DataFrame(results).T.to_csv(os.path.join(model_dir, 'training_summary.csv'))
-    print(f"✅ Training complete. Summary at {model_dir}/training_summary.csv")
+    # Summary file
+    summary = pd.DataFrame([
+        {'model': 'rf', 'val_accuracy': val_rf_acc, 'mode': mode},
+        {'model': 'mlp', 'val_accuracy': val_mlp_acc, 'mode': mode}
+    ])
+    summary.to_csv(summary_path, index=False)
+    print(f"Saved summary to {summary_path}")
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
