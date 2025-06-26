@@ -5,11 +5,13 @@ import numpy as np
 import pandas as pd
 import joblib
 
+# --- Robust project root and model dir ---
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+MODELS_DIR = os.path.join(PROJECT_ROOT, 'models')
+os.makedirs(MODELS_DIR, exist_ok=True)
+
 # Make sure src/ is on sys.path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-os.makedirs('../../models', exist_ok=True)
-
 
 from data_loading import load_dataset
 from sklearn.model_selection import train_test_split
@@ -28,16 +30,16 @@ def main():
         from model import get_random_forest_pipeline, get_mlp_pipeline
         rf_pipeline = get_random_forest_pipeline()
         mlp_pipeline = get_mlp_pipeline()
-        rf_model_path = '../../models/rf_model.joblib'
-        mlp_model_path = '../../models/mlp_model.joblib'
-        summary_path = '../../models/training_summary.csv'
+        rf_model_path = os.path.join(MODELS_DIR, 'rf_model.joblib')
+        mlp_model_path = os.path.join(MODELS_DIR, 'mlp_model.joblib')
+        summary_path = os.path.join(MODELS_DIR, 'training_summary.csv')
     else:
         from model import get_rf_augmented_pipeline, get_mlp_augmented_pipeline
         rf_pipeline = get_rf_augmented_pipeline()
         mlp_pipeline = get_mlp_augmented_pipeline()
-        rf_model_path = '../../models/rf_aug_model.joblib'
-        mlp_model_path = '../../models/mlp_aug_model.joblib'
-        summary_path = '../../models/training_aug_summary.csv'
+        rf_model_path = os.path.join(MODELS_DIR, 'rf_aug_model.joblib')
+        mlp_model_path = os.path.join(MODELS_DIR, 'mlp_aug_model.joblib')
+        summary_path = os.path.join(MODELS_DIR, 'training_aug_summary.csv')
 
     X_train, y_train, _ = load_dataset('data')
     idx = np.arange(len(X_train))

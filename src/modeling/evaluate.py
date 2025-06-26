@@ -7,11 +7,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# Add src/ to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from data_loading import load_dataset
-
+from augmentation.features import FeatureExtractor
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 
@@ -35,13 +34,17 @@ def main():
     args = parse_args()
     mode = args.mode
 
+    PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    MODELS_DIR = os.path.join(PROJECT_ROOT, 'models')
+    os.makedirs(MODELS_DIR, exist_ok=True)
+
     if mode == 'baseline':
-        rf_model_path = '../../models/rf_model.joblib'
-        mlp_model_path = '../../models/mlp_model.joblib'
+        rf_model_path = os.path.join(MODELS_DIR, 'rf_model.joblib')
+        mlp_model_path = os.path.join(MODELS_DIR, 'mlp_model.joblib')
         csv_prefix = 'base'
     else:
-        rf_model_path = '../../models/rf_aug_model.joblib'
-        mlp_model_path = '../../models/mlp_aug_model.joblib'
+        rf_model_path = os.path.join(MODELS_DIR, 'rf_aug_model.joblib')
+        mlp_model_path = os.path.join(MODELS_DIR, 'mlp_aug_model.joblib')
         csv_prefix = 'augment'
 
     # Load data
@@ -51,23 +54,36 @@ def main():
     X_val = [X_train[i] for i in val_idx]
     y_val = y_train.iloc[val_idx].values
 
+    # --- Explicit feature extraction if model pipeline does not contain it ---
+    # Load a model and check if it has a "features" step; otherwise, extract features here
+    fe = FeatureExtractor()
+    # You *must* do this if you trained models on features, not signals!
+    X_val_feat = fe.transform(X_val)
+    X_test_feat = fe.transform(X_test)
+
     for name, model_path in zip(['rf', 'mlp'], [rf_model_path, mlp_model_path]):
         print(f"\nEvaluating {name.upper()} ({mode}) ...")
         if not os.path.exists(model_path):
             print(f"Model not found: {model_path}")
             continue
         model = joblib.load(model_path)
-        # ONLY pass the raw signals, let the pipeline do feature extraction/augmentation as needed
-        y_val_pred = model.predict(X_val)
+        try:
+            # Try predicting with raw signal (works if pipeline includes feature extraction)
+            y_val_pred = model.predict(X_val)
+        except Exception:
+            # Fallback: predict with explicit features
+            y_val_pred = model.predict(X_val_feat)
         val_acc = accuracy_score(y_val, y_val_pred)
         print(f"{name.upper()} validation accuracy: {val_acc:.4f}")
         print(f"{name.upper()} Classification report:\n{classification_report(y_val, y_val_pred)}")
         plot_confusion(y_val, y_val_pred, f"{name.upper()}-{mode}")
 
-        # Test prediction
-        y_test_pred = model.predict(X_test)
+        try:
+            y_test_pred = model.predict(X_test)
+        except Exception:
+            y_test_pred = model.predict(X_test_feat)
         pred_df = pd.DataFrame({"label": y_test_pred})
-        pred_path = os.path.join('../../models', f"{name}_{csv_prefix}.csv")
+        pred_path = os.path.join(MODELS_DIR, f"{name}_{csv_prefix}.csv")
         pred_df.to_csv(pred_path, index=False)
         print(f"Saved {pred_path}")
 
