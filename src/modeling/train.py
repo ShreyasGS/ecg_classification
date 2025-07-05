@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from data_loading import load_dataset
 from reduction.reduce import read_custom_binary
 from sklearn.model_selection import train_test_split
+from augmentation.features import FeatureExtractor
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -28,7 +29,7 @@ def main():
     mode = args.mode
 
     if mode == 'baseline':
-        from model import get_random_forest_pipeline, get_mlp_pipeline
+        from modeling.model import get_random_forest_pipeline, get_mlp_pipeline
         rf_pipeline = get_random_forest_pipeline()
         mlp_pipeline = get_mlp_pipeline()
         rf_model_path = os.path.join(MODELS_DIR, 'rf_model.joblib')
@@ -43,7 +44,7 @@ def main():
         X_val = [X_train[i] for i in val_idx]
         y_val = y_train.iloc[val_idx].values
     elif mode == 'augment':
-        from model import get_rf_augmented_pipeline, get_mlp_augmented_pipeline
+        from modeling.model import get_rf_augmented_pipeline, get_mlp_augmented_pipeline
         rf_pipeline = get_rf_augmented_pipeline()
         mlp_pipeline = get_mlp_augmented_pipeline()
         rf_model_path = os.path.join(MODELS_DIR, 'rf_aug_model.joblib')
@@ -58,7 +59,7 @@ def main():
         X_val = [X_train[i] for i in val_idx]
         y_val = y_train.iloc[val_idx].values
     else:  # REDUCTION
-        from model import get_rf_reduced_pipeline, get_mlp_reduced_pipeline
+        from modeling.model import get_rf_reduced_pipeline, get_mlp_reduced_pipeline
         rf_pipeline = get_rf_reduced_pipeline()
         mlp_pipeline = get_mlp_reduced_pipeline()
         rf_model_path = os.path.join(MODELS_DIR, 'rf_reduced_model.joblib')
@@ -78,6 +79,11 @@ def main():
         y_tr = y_reduced.iloc[train_idx].values.ravel()
         X_val = [X_reduced[i] for i in val_idx]
         y_val = y_reduced.iloc[val_idx].values.ravel()
+        
+        # For reduced data, we need to extract features before training
+        feature_extractor = FeatureExtractor()
+        X_tr = feature_extractor.transform(X_tr)
+        X_val = feature_extractor.transform(X_val)
 
     # --- Training and summary as before ---
     print(f"Training Random Forest ({mode})...")

@@ -12,6 +12,7 @@ from data_loading import load_dataset
 from reduction.reduce import read_custom_binary
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
+from augmentation.features import FeatureExtractor
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 MODELS_DIR = os.path.join(PROJECT_ROOT, 'models')
@@ -21,6 +22,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', choices=['baseline', 'augment', 'reduction'], default='baseline',
                         help='Which pipeline/model to use for evaluation')
+    parser.add_argument('--model-path', type=str, help='Path to the model file')
+    parser.add_argument('--output-path', type=str, help='Path to save the output CSV file')
     parser.add_argument('--reduced_file', default='train_25pct_kmeans.bin', help='Reduced binary file for reduction mode')
     parser.add_argument('--reduced_test_file', default='test_25pct_kmeans.bin', help='Reduced binary test set (optional)')
     return parser.parse_args()
@@ -33,16 +36,20 @@ def plot_confusion(y_true, y_pred, model_name):
     plt.xlabel("Predicted")
     plt.ylabel("True")
     plt.tight_layout()
-    plt.show()
+    plt.savefig(os.path.join(PROJECT_ROOT, f"{model_name}_confusion.png"))
+    plt.close()
 
 def main():
     args = parse_args()
     mode = args.mode
+    model_path = args.model_path
+    output_path = args.output_path
 
     if mode == 'baseline':
-        rf_model_path = os.path.join(MODELS_DIR, 'rf_model.joblib')
-        mlp_model_path = os.path.join(MODELS_DIR, 'mlp_model.joblib')
-        csv_prefix = 'base'
+        if not model_path:
+            model_path = os.path.join(MODELS_DIR, 'rf_model.joblib')
+        if not output_path:
+            output_path = os.path.join(PROJECT_ROOT, 'base.csv')
         X_train, y_train, X_test = load_dataset('data')
         idx = np.arange(len(X_train))
         train_idx, val_idx = train_test_split(idx, test_size=0.2, stratify=y_train, random_state=42)
@@ -52,9 +59,10 @@ def main():
         y_eval = y_val
         X_test_eval = X_test
     elif mode == 'augment':
-        rf_model_path = os.path.join(MODELS_DIR, 'rf_aug_model.joblib')
-        mlp_model_path = os.path.join(MODELS_DIR, 'mlp_aug_model.joblib')
-        csv_prefix = 'augment'
+        if not model_path:
+            model_path = os.path.join(MODELS_DIR, 'rf_aug_model.joblib')
+        if not output_path:
+            output_path = os.path.join(PROJECT_ROOT, 'augment.csv')
         X_train, y_train, X_test = load_dataset('data')
         idx = np.arange(len(X_train))
         train_idx, val_idx = train_test_split(idx, test_size=0.2, stratify=y_train, random_state=42)
@@ -64,9 +72,10 @@ def main():
         y_eval = y_val
         X_test_eval = X_test
     else:  # REDUCTION
-        rf_model_path = os.path.join(MODELS_DIR, 'rf_reduced_model.joblib')
-        mlp_model_path = os.path.join(MODELS_DIR, 'mlp_reduced_model.joblib')
-        csv_prefix = 'reduced'
+        if not model_path:
+            model_path = os.path.join(MODELS_DIR, 'rf_reduced_model.joblib')
+        if not output_path:
+            output_path = os.path.join(PROJECT_ROOT, 'reduced.csv')
         # Use reduced val/test data as in train.py
         reduced_path = os.path.join(REDUCED_DIR, args.reduced_file)
         X_reduced = read_custom_binary(reduced_path)
@@ -85,24 +94,28 @@ def main():
             print("Reduced test set binary not found. Using baseline test set as fallback.")
             _, _, X_test = load_dataset('data')
             X_test_eval = X_test  # fallback
+        
+        # For reduced data, we need to extract features before evaluation
+        feature_extractor = FeatureExtractor()
+        X_eval = feature_extractor.transform(X_eval)
+        X_test_eval = feature_extractor.transform(X_test_eval)
 
-    for name, model_path in zip(['rf', 'mlp'], [rf_model_path, mlp_model_path]):
-        print(f"\nEvaluating {name.upper()} ({mode}) ...")
-        if not os.path.exists(model_path):
-            print(f"Model not found: {model_path}")
-            continue
-        model = joblib.load(model_path)
-        y_val_pred = model.predict(X_eval)
-        val_acc = accuracy_score(y_eval, y_val_pred)
-        print(f"{name.upper()} validation accuracy: {val_acc:.4f}")
-        print(f"{name.upper()} Classification report:\n{classification_report(y_eval, y_val_pred)}")
-        plot_confusion(y_eval, y_val_pred, f"{name.upper()}-{mode}")
+    print(f"\nEvaluating model from {model_path} ...")
+    if not os.path.exists(model_path):
+        print(f"Model not found: {model_path}")
+        return
+    
+    model = joblib.load(model_path)
+    y_val_pred = model.predict(X_eval)
+    val_acc = accuracy_score(y_eval, y_val_pred)
+    print(f"Validation accuracy: {val_acc:.4f}")
+    print(f"Classification report:\n{classification_report(y_eval, y_val_pred)}")
+    plot_confusion(y_eval, y_val_pred, f"{os.path.basename(model_path).split('.')[0]}")
 
-        y_test_pred = model.predict(X_test_eval)
-        pred_df = pd.DataFrame({"label": y_test_pred})
-        pred_path = os.path.join(MODELS_DIR, f"{name}_{csv_prefix}.csv")
-        pred_df.to_csv(pred_path, index=False)
-        print(f"Saved {pred_path}")
+    y_test_pred = model.predict(X_test_eval)
+    pred_df = pd.DataFrame({"id": range(len(y_test_pred)), "label": y_test_pred})
+    pred_df.to_csv(output_path, index=False)
+    print(f"Saved predictions to {output_path}")
 
 if __name__ == "__main__":
     main()

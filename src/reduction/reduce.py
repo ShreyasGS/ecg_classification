@@ -210,6 +210,12 @@ def run_data_reduction_workflow():
             out_bin = os.path.join(REDUCED_DIR, f"train_{int(100*pct)}pct_{strat}.bin")
             size_c, size_o = create_custom_binary(X_sub, out_bin, compression_method='quantize')
             print(f"Saved compressed {out_bin} | orig MB: {size_o/1024/1024:.2f}, comp MB: {size_c/1024/1024:.2f}")
+            
+            # Save labels as CSV
+            out_csv = os.path.join(REDUCED_DIR, f"train_{int(100*pct)}pct_{strat}.csv")
+            y_sub.to_csv(out_csv, index=False)
+            print(f"Saved labels to {out_csv}")
+            
             # Compute metrics for first sample in reduced set
             recon_sub = read_custom_binary(out_bin)[0]
             orig_sub = np.array(X_sub[0])
