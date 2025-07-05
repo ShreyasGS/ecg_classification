@@ -1,686 +1,236 @@
 """
 reduce.py
 
-Functions for reducing ECG time series data size.
+ECG Data Reduction and Compression Utilities
+--------------------------------------------
+- Downsampling, piecewise constant/linear, wavelet, Fourier, quantization, delta, PCA.
+- Coreset selection (random or kmeans).
+- Custom binary serialization/compression and reader.
+- Example: runs for 10%, 25%, 50% data reduction.
 """
+
 import numpy as np
-import pandas as pd
-from scipy.interpolate import interp1d
-import pywt
-from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA
-import random
+import os
+import struct
 import pickle
 import zlib
-import struct
-import os
+import pywt
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
+import random
 import sys
+import pandas as pd
 
-# Add parent directory to path to import data_loading
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-# Import data_loading only when needed to avoid circular imports
-# from data_loading import read_binary_from
+# Always add src/ to sys.path for imports from src
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+REDUCED_DIR = os.path.join(PROJECT_ROOT, "reduced")
+os.makedirs(REDUCED_DIR, exist_ok=True)
 
-def downsample(time_series, factor=2):
-    """
-    Downsample a time series by a given factor.
-    
-    Args:
-        time_series (array): Time series to downsample.
-        factor (int): Downsampling factor.
-        
-    Returns:
-        array: Downsampled time series.
-    """
-    return time_series[::factor]
+from reduction.metrics import compute_all_metrics
 
 
-def piecewise_constant_approximation(time_series, num_segments):
-    """
-    Approximate a time series using piecewise constant approximation.
-    
-    Args:
-        time_series (array): Time series to approximate.
-        num_segments (int): Number of segments.
-        
-    Returns:
-        array: Approximated time series.
-    """
-    # Calculate segment length
-    segment_length = len(time_series) // num_segments
-    
-    # Initialize approximated time series
-    approximated = np.zeros(len(time_series))
-    
-    # Compute mean for each segment
+### --- Data Reduction Techniques ---
+
+def downsample(ts, factor=2):
+    return np.array(ts)[::factor]
+
+def piecewise_constant_approximation(ts, num_segments):
+    seg_len = len(ts) // num_segments
+    out = np.zeros(len(ts))
     for i in range(num_segments):
-        start = i * segment_length
-        end = (i + 1) * segment_length if i < num_segments - 1 else len(time_series)
-        segment_mean = np.mean(time_series[start:end])
-        approximated[start:end] = segment_mean
-    
-    return approximated
+        start = i * seg_len
+        end = len(ts) if i == num_segments-1 else (i+1)*seg_len
+        out[start:end] = np.mean(ts[start:end])
+    return out
 
-
-def piecewise_linear_approximation(time_series, num_segments):
-    """
-    Approximate a time series using piecewise linear approximation.
-    
-    Args:
-        time_series (array): Time series to approximate.
-        num_segments (int): Number of segments.
-        
-    Returns:
-        array: Approximated time series.
-    """
-    # Calculate segment length
-    segment_length = len(time_series) // num_segments
-    
-    # Initialize approximated time series
-    approximated = np.zeros(len(time_series))
-    
-    # Compute linear approximation for each segment
+def piecewise_linear_approximation(ts, num_segments):
+    seg_len = len(ts) // num_segments
+    out = np.zeros(len(ts))
     for i in range(num_segments):
-        start = i * segment_length
-        end = (i + 1) * segment_length if i < num_segments - 1 else len(time_series)
-        
-        if end - start <= 1:
-            # If segment has only one point, use constant approximation
-            approximated[start:end] = time_series[start]
+        start = i * seg_len
+        end = len(ts) if i == num_segments-1 else (i+1)*seg_len
+        x = np.arange(start, end)
+        y = ts[start:end]
+        if len(x) < 2:
+            out[start:end] = y
         else:
-            # Compute linear approximation
-            x = np.arange(start, end)
-            y = time_series[start:end]
             coeffs = np.polyfit(x, y, 1)
-            approximated[start:end] = np.polyval(coeffs, x)
-    
-    return approximated
+            out[start:end] = np.polyval(coeffs, x)
+    return out
 
+def wavelet_compression(ts, wavelet='db4', threshold_ratio=0.1):
+    coeffs = pywt.wavedec(ts, wavelet)
+    arr, slices = pywt.coeffs_to_array(coeffs)
+    idx = np.argsort(np.abs(arr))
+    n_keep = int(len(arr) * threshold_ratio)
+    arr[idx[:-n_keep]] = 0
+    coeffs_thresh = pywt.array_to_coeffs(arr, slices, output_format='wavedec')
+    recon = pywt.waverec(coeffs_thresh, wavelet)
+    return recon[:len(ts)]
 
-def wavelet_compression(time_series, wavelet='db4', threshold_ratio=0.1):
-    """
-    Compress a time series using wavelet transform.
-    
-    Args:
-        time_series (array): Time series to compress.
-        wavelet (str): Wavelet type.
-        threshold_ratio (float): Ratio of coefficients to keep.
-        
-    Returns:
-        array: Compressed time series.
-    """
-    # Compute wavelet transform
-    coeffs = pywt.wavedec(time_series, wavelet)
-    
-    # Flatten coefficients
-    coeff_arr, coeff_slices = pywt.coeffs_to_array(coeffs)
-    
-    # Sort coefficients by magnitude
-    sorted_indices = np.argsort(np.abs(coeff_arr))
-    
-    # Set small coefficients to zero
-    threshold_idx = int(len(sorted_indices) * (1 - threshold_ratio))
-    coeff_arr[sorted_indices[:threshold_idx]] = 0
-    
-    # Convert back to coefficients
-    coeffs = pywt.array_to_coeffs(coeff_arr, coeff_slices, output_format='wavedec')
-    
-    # Reconstruct signal
-    reconstructed = pywt.waverec(coeffs, wavelet)
-    
-    # Ensure the reconstructed signal has the same length as the original
-    if len(reconstructed) > len(time_series):
-        reconstructed = reconstructed[:len(time_series)]
-    
-    return reconstructed
+def fourier_compression(ts, threshold_ratio=0.1):
+    f = np.fft.rfft(ts)
+    idx = np.argsort(np.abs(f))
+    n_keep = int(len(f) * threshold_ratio)
+    f[idx[:-n_keep]] = 0
+    recon = np.fft.irfft(f, n=len(ts))
+    return recon
 
+def quantize(ts, num_levels=256):
+    min_val, max_val = np.min(ts), np.max(ts)
+    q = np.round((ts - min_val) / (max_val - min_val) * (num_levels-1))
+    return q.astype(np.uint8), float(min_val), float(max_val)
 
-def fourier_compression(time_series, threshold_ratio=0.1):
-    """
-    Compress a time series using Fourier transform.
-    
-    Args:
-        time_series (array): Time series to compress.
-        threshold_ratio (float): Ratio of coefficients to keep.
-        
-    Returns:
-        array: Compressed time series.
-    """
-    # Compute FFT
-    fft = np.fft.rfft(time_series)
-    
-    # Sort coefficients by magnitude
-    sorted_indices = np.argsort(np.abs(fft))
-    
-    # Set small coefficients to zero
-    threshold_idx = int(len(sorted_indices) * (1 - threshold_ratio))
-    fft[sorted_indices[:threshold_idx]] = 0
-    
-    # Reconstruct signal
-    reconstructed = np.fft.irfft(fft, n=len(time_series))
-    
-    return reconstructed
+def dequantize(q, min_val, max_val, num_levels=256):
+    return q / (num_levels-1) * (max_val - min_val) + min_val
 
-
-def quantize(time_series, num_levels=256):
-    """
-    Quantize a time series to a given number of levels.
-    
-    Args:
-        time_series (array): Time series to quantize.
-        num_levels (int): Number of quantization levels.
-        
-    Returns:
-        tuple: (quantized time series, min value, max value)
-    """
-    # Get min and max values
-    min_val = np.min(time_series)
-    max_val = np.max(time_series)
-    
-    # Quantize
-    quantized = np.round((time_series - min_val) / (max_val - min_val) * (num_levels - 1))
-    
-    return quantized, min_val, max_val
-
-
-def dequantize(quantized, min_val, max_val, num_levels=256):
-    """
-    Dequantize a time series.
-    
-    Args:
-        quantized (array): Quantized time series.
-        min_val (float): Minimum value of the original time series.
-        max_val (float): Maximum value of the original time series.
-        num_levels (int): Number of quantization levels.
-        
-    Returns:
-        array: Dequantized time series.
-    """
-    return quantized / (num_levels - 1) * (max_val - min_val) + min_val
-
-
-def delta_encoding(time_series):
-    """
-    Encode a time series using delta encoding.
-    
-    Args:
-        time_series (array): Time series to encode.
-        
-    Returns:
-        tuple: (encoded time series, first value)
-    """
-    # Get first value
-    first_val = time_series[0]
-    
-    # Compute deltas
-    deltas = np.diff(time_series)
-    
-    return deltas, first_val
-
+def delta_encoding(ts):
+    ts = np.asarray(ts)
+    return np.diff(ts), ts[0]
 
 def delta_decoding(deltas, first_val):
-    """
-    Decode a delta-encoded time series.
-    
-    Args:
-        deltas (array): Delta-encoded time series.
-        first_val (float): First value of the original time series.
-        
-    Returns:
-        array: Decoded time series.
-    """
-    # Initialize decoded time series
-    decoded = np.zeros(len(deltas) + 1)
-    decoded[0] = first_val
-    
-    # Reconstruct signal
-    for i in range(len(deltas)):
-        decoded[i + 1] = decoded[i] + deltas[i]
-    
-    return decoded
+    return np.concatenate([[first_val], np.cumsum(deltas) + first_val])
 
+def coreset_selection(ts_list, y, ratio=0.1, method='kmeans'):
+    n = max(1, int(len(ts_list) * ratio))
+    if method == "random":
+        idx = random.sample(range(len(ts_list)), n)
+        return [ts_list[i] for i in idx], y.iloc[idx]
+    # KMeans on mean, std, ptp, median
+    feats = np.array([[np.mean(ts), np.std(ts), np.ptp(ts), np.median(ts)] for ts in ts_list])
+    kmeans = KMeans(n_clusters=n, random_state=42).fit(feats)
+    sel_idx = []
+    for i in range(n):
+        cluster_idx = np.where(kmeans.labels_ == i)[0]
+        c = kmeans.cluster_centers_[i]
+        d = np.linalg.norm(feats[cluster_idx] - c, axis=1)
+        sel_idx.append(cluster_idx[np.argmin(d)])
+    return [ts_list[i] for i in sel_idx], y.iloc[sel_idx]
 
-def run_length_encoding(time_series):
-    """
-    Encode a time series using run-length encoding.
-    
-    Args:
-        time_series (array): Time series to encode.
-        
-    Returns:
-        list: List of (value, count) tuples.
-    """
-    # Initialize encoded time series
-    encoded = []
-    
-    # Current value and count
-    current_val = time_series[0]
-    count = 1
-    
-    # Encode
-    for i in range(1, len(time_series)):
-        if time_series[i] == current_val:
-            count += 1
-        else:
-            encoded.append((current_val, count))
-            current_val = time_series[i]
-            count = 1
-    
-    # Add last run
-    encoded.append((current_val, count))
-    
-    return encoded
+### --- Custom binary serialization ---
 
-
-def run_length_decoding(encoded):
-    """
-    Decode a run-length encoded time series.
-    
-    Args:
-        encoded (list): List of (value, count) tuples.
-        
-    Returns:
-        array: Decoded time series.
-    """
-    # Initialize decoded time series
-    decoded = []
-    
-    # Decode
-    for val, count in encoded:
-        decoded.extend([val] * count)
-    
-    return np.array(decoded)
-
-
-def coreset_selection(time_series_list, ratio=0.1, method='kmeans'):
-    """
-    Select a coreset from a list of time series.
-    
-    Args:
-        time_series_list (list): List of time series.
-        ratio (float): Ratio of time series to select.
-        method (str): Method to use for selection ('kmeans' or 'random').
-        
-    Returns:
-        list: Selected time series.
-    """
-    # Number of time series to select
-    num_select = max(1, int(len(time_series_list) * ratio))
-    
-    if method == 'random':
-        # Random selection
-        indices = random.sample(range(len(time_series_list)), num_select)
-        selected = [time_series_list[i] for i in indices]
-    elif method == 'kmeans':
-        # Extract features for clustering
-        features = []
-        for ts in time_series_list:
-            # Use simple statistics as features
-            features.append([
-                np.mean(ts),
-                np.std(ts),
-                np.min(ts),
-                np.max(ts),
-                np.median(ts)
-            ])
-        
-        # Normalize features
-        features = np.array(features)
-        features = (features - np.mean(features, axis=0)) / np.std(features, axis=0)
-        
-        # Cluster time series
-        kmeans = KMeans(n_clusters=num_select, random_state=42)
-        labels = kmeans.fit_predict(features)
-        
-        # Select time series closest to cluster centers
-        selected = []
-        for i in range(num_select):
-            cluster_indices = np.where(labels == i)[0]
-            if len(cluster_indices) > 0:
-                # Find time series closest to cluster center
-                cluster_features = features[cluster_indices]
-                center = kmeans.cluster_centers_[i]
-                distances = np.linalg.norm(cluster_features - center, axis=1)
-                closest_idx = cluster_indices[np.argmin(distances)]
-                selected.append(time_series_list[closest_idx])
-    else:
-        raise ValueError(f"Unknown method: {method}")
-    
-    return selected
-
-
-def create_custom_binary(time_series_list, output_path, compression_method='quantize', compression_params=None):
-    """
-    Create a custom binary file from a list of time series.
-    
-    Args:
-        time_series_list (list): List of time series.
-        output_path (str): Path to save the binary file.
-        compression_method (str): Compression method to use.
-        compression_params (dict): Parameters for the compression method.
-        
-    Returns:
-        tuple: (compressed_size, original_size)
-    """
+def create_custom_binary(ts_list, output_path, compression_method='quantize', compression_params=None):
     compression_params = compression_params or {}
-    
-    # Compress each time series
     compressed_data = []
     original_size = 0
-    
-    for ts in time_series_list:
-        original_size += len(ts) * 2  # 2 bytes per value (16-bit)
-        
-        if compression_method == 'quantize':
-            num_levels = compression_params.get('num_levels', 256)
-            quantized, min_val, max_val = quantize(ts, num_levels)
-            
-            # Store as 8-bit integers
-            compressed = {
-                'data': quantized.astype(np.uint8),
-                'min_val': min_val,
-                'max_val': max_val
-            }
-        elif compression_method == 'wavelet':
-            threshold_ratio = compression_params.get('threshold_ratio', 0.1)
-            wavelet = compression_params.get('wavelet', 'db4')
-            compressed_ts = wavelet_compression(ts, wavelet, threshold_ratio)
-            
-            # Store as 16-bit integers
-            compressed = {
-                'data': compressed_ts.astype(np.int16)
-            }
-        elif compression_method == 'fourier':
-            threshold_ratio = compression_params.get('threshold_ratio', 0.1)
-            compressed_ts = fourier_compression(ts, threshold_ratio)
-            
-            # Store as 16-bit integers
-            compressed = {
-                'data': compressed_ts.astype(np.int16)
-            }
-        elif compression_method == 'delta':
-            deltas, first_val = delta_encoding(ts)
-            
-            # Store as 8-bit integers with scaling
-            max_delta = np.max(np.abs(deltas))
-            scale = 127 / max_delta if max_delta > 0 else 1
-            scaled_deltas = np.round(deltas * scale).astype(np.int8)
-            
-            compressed = {
-                'data': scaled_deltas,
-                'first_val': first_val,
-                'scale': scale
-            }
-        elif compression_method == 'pca':
-            # Use PCA for dimensionality reduction
-            n_components = compression_params.get('n_components', 10)
-            pca = PCA(n_components=n_components)
-            
-            # Reshape for PCA
-            ts_reshaped = ts.reshape(1, -1)
-            
-            # Apply PCA
-            transformed = pca.fit_transform(ts_reshaped)
-            
-            compressed = {
-                'transformed': transformed,
-                'components': pca.components_,
-                'mean': pca.mean_
-            }
+    for ts in ts_list:
+        original_size += len(ts) * 2
+        if compression_method == "quantize":
+            q, mn, mx = quantize(ts, compression_params.get('num_levels', 256))
+            obj = {'data': q, 'min_val': mn, 'max_val': mx}
+        elif compression_method == "wavelet":
+            thr = compression_params.get('threshold_ratio', 0.1)
+            wv = wavelet_compression(ts, threshold_ratio=thr)
+            obj = {'data': wv}
+        elif compression_method == "fourier":
+            thr = compression_params.get('threshold_ratio', 0.1)
+            ft = fourier_compression(ts, threshold_ratio=thr)
+            obj = {'data': ft}
         else:
-            # No compression
-            compressed = {
-                'data': ts.astype(np.int16)
-            }
-        
-        compressed_data.append(compressed)
-    
-    # Save to binary file
+            obj = {'data': ts}
+        compressed_data.append(obj)
     with open(output_path, 'wb') as f:
-        # Write number of time series
         f.write(struct.pack('i', len(compressed_data)))
-        
-        # Write compression method
         f.write(struct.pack('i', len(compression_method)))
         f.write(compression_method.encode())
-        
-        # Write each compressed time series
-        for compressed in compressed_data:
-            # Serialize the compressed data
-            serialized = pickle.dumps(compressed)
-            
-            # Compress with zlib
-            compressed_bytes = zlib.compress(serialized)
-            
-            # Write size and data
-            f.write(struct.pack('i', len(compressed_bytes)))
-            f.write(compressed_bytes)
-    
-    # Get compressed size
-    compressed_size = os.path.getsize(output_path)
-    
-    return compressed_size, original_size
-
+        for obj in compressed_data:
+            s = pickle.dumps(obj)
+            s = zlib.compress(s)
+            f.write(struct.pack('i', len(s)))
+            f.write(s)
+    return os.path.getsize(output_path), original_size
 
 def read_custom_binary(input_path):
-    """
-    Read a custom binary file.
-    
-    Args:
-        input_path (str): Path to the binary file.
-        
-    Returns:
-        list: List of time series.
-    """
-    time_series_list = []
-    
+    ts_list = []
     with open(input_path, 'rb') as f:
-        # Read number of time series
-        num_time_series = struct.unpack('i', f.read(4))[0]
-        
-        # Read compression method
+        n = struct.unpack('i', f.read(4))[0]
         method_len = struct.unpack('i', f.read(4))[0]
-        compression_method = f.read(method_len).decode()
-        
-        # Read each compressed time series
-        for _ in range(num_time_series):
-            # Read size and data
+        method = f.read(method_len).decode()
+        for _ in range(n):
             size = struct.unpack('i', f.read(4))[0]
-            compressed_bytes = f.read(size)
-            
-            # Decompress with zlib
-            serialized = zlib.decompress(compressed_bytes)
-            
-            # Deserialize the compressed data
-            compressed = pickle.loads(serialized)
-            
-            # Decompress based on method
-            if compression_method == 'quantize':
-                ts = dequantize(compressed['data'], compressed['min_val'], compressed['max_val'])
-            elif compression_method == 'wavelet' or compression_method == 'fourier':
-                ts = compressed['data']
-            elif compression_method == 'delta':
-                deltas = compressed['data'] / compressed['scale']
-                ts = delta_decoding(deltas, compressed['first_val'])
-            elif compression_method == 'pca':
-                # Reconstruct from PCA
-                ts = np.dot(compressed['transformed'], compressed['components']) + compressed['mean']
-                ts = ts.flatten()
+            s = f.read(size)
+            obj = pickle.loads(zlib.decompress(s))
+            if method == "quantize":
+                ts = dequantize(obj['data'], obj['min_val'], obj['max_val'])
             else:
-                # No compression
-                ts = compressed['data']
-            
-            time_series_list.append(ts)
-    
-    return time_series_list
+                ts = obj['data']
+            ts_list.append(ts)
+    return ts_list
 
+### --- Reduction Workflow Example ---
 
-def evaluate_compression(original, compressed):
-    """
-    Evaluate compression quality.
-    
-    Args:
-        original (array): Original time series.
-        compressed (array): Compressed time series.
-        
-    Returns:
-        dict: Dictionary of metrics.
-    """
-    # Ensure same length
-    min_len = min(len(original), len(compressed))
-    original = original[:min_len]
-    compressed = compressed[:min_len]
-    
-    # Compute metrics
-    mae = np.mean(np.abs(original - compressed))
-    mse = np.mean(np.square(original - compressed))
-    rmse = np.sqrt(mse)
-    
-    # Normalized metrics
-    range_val = np.max(original) - np.min(original)
-    if range_val > 0:
-        nmae = mae / range_val
-        nrmse = rmse / range_val
-    else:
-        nmae = 0
-        nrmse = 0
-    
-    # Compression ratio
-    original_size = len(original) * 2  # 2 bytes per value (16-bit)
-    compressed_size = len(compressed) * 2  # Depends on the compression method
-    
-    metrics = {
-        'mae': mae,
-        'mse': mse,
-        'rmse': rmse,
-        'nmae': nmae,
-        'nrmse': nrmse,
-        'original_size': original_size,
-        'compressed_size': compressed_size,
-        'compression_ratio': original_size / compressed_size if compressed_size > 0 else float('inf')
-    }
-    
-    return metrics
-
-
-def main():
-    """
-    Main function to demonstrate data reduction.
-    """
+def run_data_reduction_workflow():
     import matplotlib.pyplot as plt
     from data_loading import load_dataset
-    
-    # Load data
-    X_train, y_train, _ = load_dataset()
-    
-    if X_train is None:
-        print("Could not load data. Exiting.")
-        return
-    
-    # Select a sample
-    sample_idx = 0
-    sample = X_train[sample_idx]
-    label = y_train.iloc[sample_idx]['label']
-    
-    print(f"Original sample (class {label}):")
-    print(f"Length: {len(sample)}")
-    
-    # Apply different reduction techniques
-    plt.figure(figsize=(15, 10))
-    
-    # Plot original
-    plt.subplot(3, 2, 1)
-    plt.plot(sample)
-    plt.title("Original")
-    
-    # Downsample
-    factor = 4
-    downsampled = downsample(sample, factor)
-    plt.subplot(3, 2, 2)
-    plt.plot(np.arange(0, len(sample), factor), downsampled)
-    plt.title(f"Downsampled (factor={factor})")
-    
-    # Piecewise constant approximation
-    num_segments = 50
-    pca = piecewise_constant_approximation(sample, num_segments)
-    plt.subplot(3, 2, 3)
-    plt.plot(pca)
-    plt.title(f"Piecewise Constant (segments={num_segments})")
-    
-    # Piecewise linear approximation
-    num_segments = 20
-    pla = piecewise_linear_approximation(sample, num_segments)
-    plt.subplot(3, 2, 4)
-    plt.plot(pla)
-    plt.title(f"Piecewise Linear (segments={num_segments})")
-    
-    # Wavelet compression
-    threshold_ratio = 0.1
-    wavelet_compressed = wavelet_compression(sample, threshold_ratio=threshold_ratio)
-    plt.subplot(3, 2, 5)
-    plt.plot(wavelet_compressed)
-    plt.title(f"Wavelet Compression (ratio={threshold_ratio})")
-    
-    # Fourier compression
-    threshold_ratio = 0.1
-    fourier_compressed = fourier_compression(sample, threshold_ratio=threshold_ratio)
-    plt.subplot(3, 2, 6)
-    plt.plot(fourier_compressed)
-    plt.title(f"Fourier Compression (ratio={threshold_ratio})")
-    
-    plt.tight_layout()
-    plt.savefig("reduction_examples.png")
-    plt.close()
-    
-    print("Reduction examples saved to 'reduction_examples.png'")
-    
-    # Evaluate compression quality
-    print("\nCompression quality:")
-    
-    techniques = [
-        ("Downsampling", downsampled),
-        ("Piecewise Constant", pca),
-        ("Piecewise Linear", pla),
-        ("Wavelet", wavelet_compressed),
-        ("Fourier", fourier_compressed)
-    ]
-    
-    for name, compressed in techniques:
-        metrics = evaluate_compression(sample, compressed)
-        print(f"\n{name}:")
-        print(f"  MAE: {metrics['mae']:.4f}")
-        print(f"  MSE: {metrics['mse']:.4f}")
-        print(f"  RMSE: {metrics['rmse']:.4f}")
-        print(f"  Compression ratio: {metrics['compression_ratio']:.2f}")
-    
-    # Create custom binary file
-    print("\nCreating custom binary file...")
-    
-    # Use a subset of the data
-    subset_size = min(100, len(X_train))
-    subset = X_train[:subset_size]
-    
-    # Create binary file with different compression methods
-    methods = ['quantize', 'wavelet', 'fourier', 'delta', 'pca']
-    
-    for method in methods:
-        output_path = f"X_train_reduced_{method}.bin"
-        compressed_size, original_size = create_custom_binary(subset, output_path, method)
-        
-        print(f"\n{method.capitalize()} compression:")
-        print(f"  Original size: {original_size} bytes")
-        print(f"  Compressed size: {compressed_size} bytes")
-        print(f"  Compression ratio: {original_size / compressed_size:.2f}")
-        
-        # Read back
-        reconstructed = read_custom_binary(output_path)
-        
-        # Evaluate quality
-        metrics = evaluate_compression(subset[0], reconstructed[0])
-        print(f"  MAE: {metrics['mae']:.4f}")
-        print(f"  RMSE: {metrics['rmse']:.4f}")
 
+    # Load data
+    X_train, y_train, _ = load_dataset('data')
+
+    # Demonstrate and plot one sample with all compressions and save/print metrics
+    sample = np.asarray(X_train[0])
+    orig_size = sample.size * 2
+    reduction_methods = [
+        ("Downsample", downsample(sample,4)),
+        ("PiecewiseConstant", piecewise_constant_approximation(sample, 50)),
+        ("PiecewiseLinear", piecewise_linear_approximation(sample, 20)),
+        ("Wavelet", wavelet_compression(sample, threshold_ratio=0.1)),
+        ("Fourier", fourier_compression(sample, threshold_ratio=0.1)),
+        ("Quantize", dequantize(*quantize(sample, 256))),
+    ]
+    metrics_list = []
+    names = []
+    print("=== Metrics for Single Sample (first train sample) ===")
+    for method, arr in reduction_methods:
+        met = compute_all_metrics(sample, arr, original_size=orig_size, compressed_size=arr.size*2)
+        print(f"{method}: {met}")
+        metrics_list.append(met)
+        names.append(method)
+    pd.DataFrame(metrics_list, index=names).to_csv(os.path.join(REDUCED_DIR, "sample_metrics.csv"))
+    print(f"Saved sample_metrics.csv to {REDUCED_DIR}")
+
+    plt.figure(figsize=(12,8))
+    for i, (method, arr) in enumerate(reduction_methods):
+        plt.subplot(2, 3, i+1)
+        plt.plot(arr)
+        plt.title(method)
+    plt.tight_layout()
+    plt.savefig(os.path.join(REDUCED_DIR, "reduction_examples.png"))
+    print(f"Reduction plots saved to {REDUCED_DIR}")
+
+    # Try 10%, 25%, 50% random and coreset, print and save compression results
+    subset_metrics_rows = []
+    for pct in [0.1, 0.25, 0.5]:
+        for strat in ['random', 'kmeans']:
+            print(f"\n==== {int(100*pct)}% {strat} subset ====")
+            X_sub, y_sub = coreset_selection(X_train, y_train, ratio=pct, method=strat)
+            print(f"Selected {len(X_sub)} samples.")
+            # Save compressed version
+            out_bin = os.path.join(REDUCED_DIR, f"train_{int(100*pct)}pct_{strat}.bin")
+            size_c, size_o = create_custom_binary(X_sub, out_bin, compression_method='quantize')
+            print(f"Saved compressed {out_bin} | orig MB: {size_o/1024/1024:.2f}, comp MB: {size_c/1024/1024:.2f}")
+            
+            # Save labels as CSV
+            out_csv = os.path.join(REDUCED_DIR, f"train_{int(100*pct)}pct_{strat}.csv")
+            y_sub.to_csv(out_csv, index=False)
+            print(f"Saved labels to {out_csv}")
+            
+            # Compute metrics for first sample in reduced set
+            recon_sub = read_custom_binary(out_bin)[0]
+            orig_sub = np.array(X_sub[0])
+            metrics = compute_all_metrics(orig_sub, recon_sub, original_size=len(orig_sub)*2, compressed_size=len(recon_sub)*2)
+            print(f"First sample metrics ({int(100*pct)}% {strat}): {metrics}")
+            # Save to results
+            row = {
+                "method": f"{int(100*pct)}pct_{strat}",
+                "orig_mb": size_o/1024/1024,
+                "comp_mb": size_c/1024/1024,
+                **metrics
+            }
+            subset_metrics_rows.append(row)
+    pd.DataFrame(subset_metrics_rows).to_csv(os.path.join(REDUCED_DIR, "subset_compression_metrics.csv"))
+    print(f"Saved all subset compression metrics to {os.path.join(REDUCED_DIR, 'subset_compression_metrics.csv')}")
 
 if __name__ == "__main__":
-    main() 
+    run_data_reduction_workflow()

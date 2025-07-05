@@ -1,346 +1,121 @@
-"""
-evaluate.py
-
-Functions for evaluating ECG classification models and computing metrics.
-"""
-import torch
+import os
+import sys
+import argparse
+import joblib
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score, f1_score,
-    confusion_matrix, classification_report, roc_curve, auc, precision_recall_curve
-)
-from tqdm import tqdm
-import os
-import sys
 
-# Add parent directory to path to import model
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from modeling.model import get_model
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from data_loading import load_dataset
+from reduction.reduce import read_custom_binary
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split
+from augmentation.features import FeatureExtractor
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+MODELS_DIR = os.path.join(PROJECT_ROOT, 'models')
+REDUCED_DIR = os.path.join(PROJECT_ROOT, 'reduced')
 
-def predict(model, data_loader, device):
-    """
-    Generate predictions for a dataset.
-    
-    Args:
-        model (nn.Module): Model to use for predictions.
-        data_loader (DataLoader): Data loader.
-        device (torch.device): Device to use.
-        
-    Returns:
-        tuple: (predictions, probabilities)
-    """
-    model = model.to(device)
-    model.eval()
-    
-    predictions = []
-    probabilities = []
-    
-    with torch.no_grad():
-        for inputs, _, _ in tqdm(data_loader, desc='Generating predictions'):
-            inputs = inputs.to(device)
-            
-            # Forward pass
-            outputs = model(inputs)
-            probs = torch.softmax(outputs, dim=1)
-            _, preds = torch.max(outputs, 1)
-            
-            # Save predictions and probabilities
-            predictions.extend(preds.cpu().numpy())
-            probabilities.extend(probs.cpu().numpy())
-    
-    return np.array(predictions), np.array(probabilities)
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', choices=['baseline', 'augment', 'reduction'], default='baseline',
+                        help='Which pipeline/model to use for evaluation')
+    parser.add_argument('--model-path', type=str, help='Path to the model file')
+    parser.add_argument('--output-path', type=str, help='Path to save the output CSV file')
+    parser.add_argument('--reduced_file', default='train_25pct_kmeans.bin', help='Reduced binary file for reduction mode')
+    parser.add_argument('--reduced_test_file', default='test_25pct_kmeans.bin', help='Reduced binary test set (optional)')
+    return parser.parse_args()
 
-
-def compute_metrics(true_labels, predictions, class_names=None):
-    """
-    Compute classification metrics.
-    
-    Args:
-        true_labels (array): True labels.
-        predictions (array): Predicted labels.
-        class_names (list): Class names.
-        
-    Returns:
-        dict: Dictionary of metrics.
-    """
-    if class_names is None:
-        class_names = ['Normal', 'AF', 'Other', 'Noisy']
-    
-    # Basic metrics
-    metrics = {
-        'accuracy': accuracy_score(true_labels, predictions),
-        'precision_macro': precision_score(true_labels, predictions, average='macro'),
-        'recall_macro': recall_score(true_labels, predictions, average='macro'),
-        'f1_macro': f1_score(true_labels, predictions, average='macro'),
-    }
-    
-    # Class-specific metrics
-    for i, class_name in enumerate(class_names):
-        metrics[f'precision_{class_name}'] = precision_score(true_labels, predictions, average=None, labels=[i])[0]
-        metrics[f'recall_{class_name}'] = recall_score(true_labels, predictions, average=None, labels=[i])[0]
-        metrics[f'f1_{class_name}'] = f1_score(true_labels, predictions, average=None, labels=[i])[0]
-    
-    return metrics
-
-
-def plot_confusion_matrix(true_labels, predictions, class_names=None, normalize=False, save_path=None):
-    """
-    Plot confusion matrix.
-    
-    Args:
-        true_labels (array): True labels.
-        predictions (array): Predicted labels.
-        class_names (list): Class names.
-        normalize (bool): Whether to normalize the confusion matrix.
-        save_path (str): Path to save the plot.
-    """
-    if class_names is None:
-        class_names = ['Normal', 'AF', 'Other', 'Noisy']
-    
-    cm = confusion_matrix(true_labels, predictions)
-    
-    if normalize:
-        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-        fmt = '.2f'
-    else:
-        fmt = 'd'
-    
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(cm, annot=True, fmt=fmt, cmap='Blues', xticklabels=class_names, yticklabels=class_names)
-    plt.title('Confusion Matrix')
-    plt.xlabel('Predicted')
-    plt.ylabel('True')
-    
-    if save_path:
-        plt.savefig(save_path)
-        plt.close()
-    else:
-        plt.show()
-
-
-def plot_roc_curve(true_labels, probabilities, class_names=None, save_path=None):
-    """
-    Plot ROC curves.
-    
-    Args:
-        true_labels (array): True labels.
-        probabilities (array): Predicted probabilities.
-        class_names (list): Class names.
-        save_path (str): Path to save the plot.
-    """
-    if class_names is None:
-        class_names = ['Normal', 'AF', 'Other', 'Noisy']
-    
-    # One-hot encode true labels
-    y_true = np.zeros((len(true_labels), len(class_names)))
-    for i, label in enumerate(true_labels):
-        y_true[i, label] = 1
-    
-    plt.figure(figsize=(10, 8))
-    
-    for i, class_name in enumerate(class_names):
-        fpr, tpr, _ = roc_curve(y_true[:, i], probabilities[:, i])
-        roc_auc = auc(fpr, tpr)
-        plt.plot(fpr, tpr, lw=2, label=f'{class_name} (AUC = {roc_auc:.2f})')
-    
-    plt.plot([0, 1], [0, 1], 'k--', lw=2)
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('Receiver Operating Characteristic')
-    plt.legend(loc="lower right")
-    
-    if save_path:
-        plt.savefig(save_path)
-        plt.close()
-    else:
-        plt.show()
-
-
-def plot_precision_recall_curve(true_labels, probabilities, class_names=None, save_path=None):
-    """
-    Plot precision-recall curves.
-    
-    Args:
-        true_labels (array): True labels.
-        probabilities (array): Predicted probabilities.
-        class_names (list): Class names.
-        save_path (str): Path to save the plot.
-    """
-    if class_names is None:
-        class_names = ['Normal', 'AF', 'Other', 'Noisy']
-    
-    # One-hot encode true labels
-    y_true = np.zeros((len(true_labels), len(class_names)))
-    for i, label in enumerate(true_labels):
-        y_true[i, label] = 1
-    
-    plt.figure(figsize=(10, 8))
-    
-    for i, class_name in enumerate(class_names):
-        precision, recall, _ = precision_recall_curve(y_true[:, i], probabilities[:, i])
-        avg_precision = np.mean(precision)
-        plt.plot(recall, precision, lw=2, label=f'{class_name} (AP = {avg_precision:.2f})')
-    
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
-    plt.xlabel('Recall')
-    plt.ylabel('Precision')
-    plt.title('Precision-Recall Curve')
-    plt.legend(loc="lower left")
-    
-    if save_path:
-        plt.savefig(save_path)
-        plt.close()
-    else:
-        plt.show()
-
-
-def save_predictions(predictions, output_path):
-    """
-    Save predictions to a CSV file.
-    
-    Args:
-        predictions (array): Predicted labels.
-        output_path (str): Path to save the CSV file.
-    """
-    df = pd.DataFrame({'label': predictions})
-    df.to_csv(output_path, index=False)
-    print(f'Predictions saved to {output_path}')
-
-
-def load_model(model_name, model_path, device, **kwargs):
-    """
-    Load a trained model.
-    
-    Args:
-        model_name (str): Name of the model.
-        model_path (str): Path to the model weights.
-        device (torch.device): Device to load the model on.
-        **kwargs: Additional arguments for the model.
-        
-    Returns:
-        nn.Module: Loaded model.
-    """
-    model = get_model(model_name, **kwargs)
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    model = model.to(device)
-    model.eval()
-    return model
-
-
-def evaluate_and_save(model, data_loader, true_labels=None, device=None, output_path=None, class_names=None):
-    """
-    Evaluate a model and save results.
-    
-    Args:
-        model (nn.Module): Model to evaluate.
-        data_loader (DataLoader): Data loader.
-        true_labels (array): True labels (optional).
-        device (torch.device): Device to use.
-        output_path (str): Path to save predictions.
-        class_names (list): Class names.
-        
-    Returns:
-        tuple: (predictions, probabilities, metrics)
-    """
-    if device is None:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    if class_names is None:
-        class_names = ['Normal', 'AF', 'Other', 'Noisy']
-    
-    # Generate predictions
-    predictions, probabilities = predict(model, data_loader, device)
-    
-    # Compute metrics if true labels are provided
-    metrics = None
-    if true_labels is not None:
-        metrics = compute_metrics(true_labels, predictions, class_names)
-        
-        # Print metrics
-        print('\nEvaluation Metrics:')
-        for metric_name, metric_value in metrics.items():
-            print(f'{metric_name}: {metric_value:.4f}')
-        
-        # Plot confusion matrix
-        plot_confusion_matrix(true_labels, predictions, class_names, normalize=False, save_path='confusion_matrix.png')
-        plot_confusion_matrix(true_labels, predictions, class_names, normalize=True, save_path='normalized_confusion_matrix.png')
-        
-        # Plot ROC curve
-        plot_roc_curve(true_labels, probabilities, class_names, save_path='roc_curve.png')
-        
-        # Plot precision-recall curve
-        plot_precision_recall_curve(true_labels, probabilities, class_names, save_path='precision_recall_curve.png')
-    
-    # Save predictions
-    if output_path:
-        save_predictions(predictions, output_path)
-    
-    return predictions, probabilities, metrics
-
+def plot_confusion(y_true, y_pred, model_name):
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(5, 4))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False)
+    plt.title(f"Confusion Matrix: {model_name}")
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.tight_layout()
+    plt.savefig(os.path.join(PROJECT_ROOT, f"{model_name}_confusion.png"))
+    plt.close()
 
 def main():
-    """
-    Main function to evaluate a model.
-    """
-    # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f'Using device: {device}')
-    
-    # Parse arguments
-    import argparse
-    parser = argparse.ArgumentParser(description='Evaluate a model')
-    parser.add_argument('--model-name', type=str, default='cnn', help='Model name')
-    parser.add_argument('--model-path', type=str, default='model.pth', help='Path to model weights')
-    parser.add_argument('--output-path', type=str, default='predictions.csv', help='Path to save predictions')
-    args = parser.parse_args()
-    
-    # Load data
-    from data_loading import load_dataset
-    X_train, y_train, X_test = load_dataset()
-    
-    if X_train is None:
-        print("Could not load data. Exiting.")
+    args = parse_args()
+    mode = args.mode
+    model_path = args.model_path
+    output_path = args.output_path
+
+    if mode == 'baseline':
+        if not model_path:
+            model_path = os.path.join(MODELS_DIR, 'rf_model.joblib')
+        if not output_path:
+            output_path = os.path.join(PROJECT_ROOT, 'base.csv')
+        X_train, y_train, X_test = load_dataset('data')
+        idx = np.arange(len(X_train))
+        train_idx, val_idx = train_test_split(idx, test_size=0.2, stratify=y_train, random_state=42)
+        X_val = [X_train[i] for i in val_idx]
+        y_val = y_train.iloc[val_idx].values
+        X_eval = X_val
+        y_eval = y_val
+        X_test_eval = X_test
+    elif mode == 'augment':
+        if not model_path:
+            model_path = os.path.join(MODELS_DIR, 'rf_aug_model.joblib')
+        if not output_path:
+            output_path = os.path.join(PROJECT_ROOT, 'augment.csv')
+        X_train, y_train, X_test = load_dataset('data')
+        idx = np.arange(len(X_train))
+        train_idx, val_idx = train_test_split(idx, test_size=0.2, stratify=y_train, random_state=42)
+        X_val = [X_train[i] for i in val_idx]
+        y_val = y_train.iloc[val_idx].values
+        X_eval = X_val
+        y_eval = y_val
+        X_test_eval = X_test
+    else:  # REDUCTION
+        if not model_path:
+            model_path = os.path.join(MODELS_DIR, 'rf_reduced_model.joblib')
+        if not output_path:
+            output_path = os.path.join(PROJECT_ROOT, 'reduced.csv')
+        # Use reduced val/test data as in train.py
+        reduced_path = os.path.join(REDUCED_DIR, args.reduced_file)
+        X_reduced = read_custom_binary(reduced_path)
+        label_path = reduced_path.replace('.bin', '.csv')
+        y_reduced = pd.read_csv(label_path)
+        idx = np.arange(len(X_reduced))
+        train_idx, val_idx = train_test_split(idx, test_size=0.2, stratify=y_reduced, random_state=42)
+        X_eval = [X_reduced[i] for i in val_idx]
+        y_eval = y_reduced.iloc[val_idx].values.ravel()
+
+        # For test set, you need to generate reduced/compressed test data using same process.
+        reduced_test_path = os.path.join(REDUCED_DIR, args.reduced_test_file)
+        if os.path.exists(reduced_test_path):
+            X_test_eval = read_custom_binary(reduced_test_path)
+        else:
+            print("Reduced test set binary not found. Using baseline test set as fallback.")
+            _, _, X_test = load_dataset('data')
+            X_test_eval = X_test  # fallback
+        
+        # For reduced data, we need to extract features before evaluation
+        feature_extractor = FeatureExtractor()
+        X_eval = feature_extractor.transform(X_eval)
+        X_test_eval = feature_extractor.transform(X_test_eval)
+
+    print(f"\nEvaluating model from {model_path} ...")
+    if not os.path.exists(model_path):
+        print(f"Model not found: {model_path}")
         return
     
-    # Create datasets and data loaders
-    from torch.utils.data import DataLoader
-    from modeling.train import ECGDataset
-    from modeling.model import pad_collate
-    
-    # Create train/val split for evaluation
-    from sklearn.model_selection import train_test_split
-    _, X_val, _, y_val = train_test_split(
-        X_train, y_train, test_size=0.2, random_state=42, stratify=y_train['label']
-    )
-    
-    val_dataset = ECGDataset(X_val, y_val)
-    test_dataset = ECGDataset(X_test)
-    
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, collate_fn=pad_collate)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, collate_fn=pad_collate)
-    
-    # Load model
-    model = load_model(args.model_name, args.model_path, device)
-    
-    # Evaluate on validation set
-    print('\nEvaluating on validation set:')
-    val_predictions, val_probabilities, val_metrics = evaluate_and_save(
-        model, val_loader, y_val['label'].values, device, None
-    )
-    
-    # Generate predictions for test set
-    print('\nGenerating predictions for test set:')
-    test_predictions, _, _ = evaluate_and_save(
-        model, test_loader, None, device, args.output_path
-    )
+    model = joblib.load(model_path)
+    y_val_pred = model.predict(X_eval)
+    val_acc = accuracy_score(y_eval, y_val_pred)
+    print(f"Validation accuracy: {val_acc:.4f}")
+    print(f"Classification report:\n{classification_report(y_eval, y_val_pred)}")
+    plot_confusion(y_eval, y_val_pred, f"{os.path.basename(model_path).split('.')[0]}")
 
+    y_test_pred = model.predict(X_test_eval)
+    pred_df = pd.DataFrame({"id": range(len(y_test_pred)), "label": y_test_pred})
+    pred_df.to_csv(output_path, index=False)
+    print(f"Saved predictions to {output_path}")
 
 if __name__ == "__main__":
-    main() 
+    main()

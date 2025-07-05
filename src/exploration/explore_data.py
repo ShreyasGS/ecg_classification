@@ -1,262 +1,166 @@
+#!/usr/bin/env python3
 """
 explore_data.py
 
-Functions for exploring and visualizing ECG time series data.
+Dataset exploration for ECG time series classification
+- Summarize class distribution, lengths, and statistics
+- Visualize representative ECGs per class
+- Stratified train/validation split and justification
 """
+
+import os
+import struct
+import zipfile
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.model_selection import train_test_split, StratifiedKFold
-import sys
-import os
+from typing import List, Tuple
 
-# Add parent directory to path to import data_loading
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from data_loading import load_dataset
+from scipy.stats import skew, kurtosis
+from scipy.signal import welch
 
+# -----------------------------------------------------------------------------#
+# Data loading (assume functions are present or import from data_loading.py)
+# -----------------------------------------------------------------------------#
+def read_zip_binary(zip_path: str) -> List[List[int]]:
+    signals: List[List[int]] = []
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        bin_name = next(f for f in zf.namelist() if f.endswith(".bin"))
+        with zf.open(bin_name, "r") as f:
+            while True:
+                size_bytes = f.read(4)
+                if not size_bytes:
+                    break
+                n = struct.unpack("i", size_bytes)[0]
+                vals = struct.unpack(f"{n}h", f.read(n * 2))
+                signals.append(list(vals))
+    return signals
 
-def compute_statistics(time_series_list):
-    """
-    Compute basic statistics for a list of time series.
-    
-    Args:
-        time_series_list (list): List of time series data.
-        
-    Returns:
-        dict: Dictionary of statistics.
-    """
-    lengths = [len(ts) for ts in time_series_list]
-    
-    # Convert to numpy arrays for computation
-    all_values = np.concatenate(time_series_list)
-    
+def load_dataset(data_dir: str = "data") -> Tuple[List[List[int]], pd.DataFrame, List[List[int]]]:
+    train_zip = os.path.join(data_dir, "X_train.zip")
+    test_zip = os.path.join(data_dir, "X_test.zip")
+    labels_csv = os.path.join(data_dir, "y_train.csv")
+    if not (os.path.exists(train_zip) and os.path.exists(test_zip) and os.path.exists(labels_csv)):
+        raise FileNotFoundError("Missing training or test files in data_dir!")
+    X_train = read_zip_binary(train_zip)
+    y_train = pd.read_csv(labels_csv, header=None, names=["label"], dtype=int)
+    X_test = read_zip_binary(test_zip)
+    return X_train, y_train, X_test
+
+# -----------------------------------------------------------------------------#
+# Core statistics and plotting
+# -----------------------------------------------------------------------------#
+def print_class_distribution(y: pd.DataFrame):
+    print("\nClass Distribution:")
+    print(y["label"].value_counts().sort_index())
+    print("\nClass Proportions:")
+    print(y["label"].value_counts(normalize=True).sort_index())
+
+def print_length_stats(X: List[List[int]]):
+    lengths = [len(ts) for ts in X]
+    print("\nLength Statistics:")
+    print(pd.Series(lengths).describe(percentiles=[0.25, 0.5, 0.75]))
+
+def print_overall_stats(X: List[List[int]]):
+    lengths = [len(ts) for ts in X]
+    values = np.concatenate(X)
     stats = {
-        'num_samples': len(time_series_list),
-        'mean_length': np.mean(lengths),
-        'std_length': np.std(lengths),
-        'min_length': np.min(lengths),
-        'max_length': np.max(lengths),
-        'mean_value': np.mean(all_values),
-        'std_value': np.std(all_values),
-        'min_value': np.min(all_values),
-        'max_value': np.max(all_values),
-        'median_value': np.median(all_values),
-        'q1_value': np.percentile(all_values, 25),
-        'q3_value': np.percentile(all_values, 75),
+        "num_samples": len(X),
+        "mean_length": np.mean(lengths),
+        "std_length": np.std(lengths),
+        "min_length": np.min(lengths),
+        "max_length": np.max(lengths),
+        "mean_value": np.mean(values),
+        "std_value": np.std(values),
+        "min_value": np.min(values),
+        "max_value": np.max(values),
+        "median_value": np.median(values),
+        "q1_value": np.percentile(values, 25),
+        "q3_value": np.percentile(values, 75),
     }
-    
-    return stats
+    print("\nOverall Statistics:")
+    for k, v in stats.items():
+        print(f"  {k}: {v}")
 
+def plot_ecg_examples(X: List[List[int]], y: pd.DataFrame, n_per_class=1, fs=300):
+    """Plots representative examples for each class."""
+    unique_labels = sorted(y["label"].unique())
+    plt.figure(figsize=(14, 2.5 * len(unique_labels)))
+    for i, cls in enumerate(unique_labels):
+        idxs = np.where(y["label"].values == cls)[0]
+        for j in range(n_per_class):
+            plt.subplot(len(unique_labels), n_per_class, i * n_per_class + j + 1)
+            plt.plot(X[idxs[j]], lw=1)
+            plt.title(f"Class {cls} example {j+1}")
+            plt.xlabel("Sample #")
+            plt.ylabel("Amplitude")
+            plt.tight_layout()
+    plt.suptitle("Representative ECG examples per class", fontsize=14, y=1.02)
+    plt.show()
 
-def compute_class_statistics(X, y):
-    """
-    Compute statistics for each class.
-    
-    Args:
-        X (list): List of time series.
-        y (pandas.DataFrame): DataFrame with labels.
-        
-    Returns:
-        dict: Dictionary of class statistics.
-    """
-    class_stats = {}
-    
-    for class_label in sorted(y['label'].unique()):
-        indices = y.index[y['label'] == class_label].tolist()
-        class_data = [X[i] for i in indices]
-        
-        stats = compute_statistics(class_data)
-        class_stats[f'Class {class_label}'] = stats
-    
-    return class_stats
+def plot_length_vs_class(X: List[List[int]], y: pd.DataFrame):
+    lengths = [len(ts) for ts in X]
+    sns.violinplot(x=y['label'], y=lengths)
+    plt.title("ECG Sequence Length by Class")
+    plt.xlabel("Class")
+    plt.ylabel("Length")
+    plt.show()
 
-
-def plot_class_distribution(y):
-    """
-    Plot the class distribution.
-    
-    Args:
-        y (pandas.DataFrame): DataFrame with labels.
-    """
-    plt.figure(figsize=(10, 6))
-    sns.countplot(x='label', data=y)
-    plt.title('Class Distribution')
-    plt.xlabel('Class Label')
-    plt.ylabel('Count')
-    plt.xticks([0, 1, 2, 3], ['Normal', 'AF', 'Other', 'Noisy'])
-    plt.tight_layout()
-    plt.savefig('class_distribution.png')
-    plt.close()
-
-
-def plot_sample_time_series(X, y, num_samples=3):
-    """
-    Plot sample time series from each class.
-    
-    Args:
-        X (list): List of time series.
-        y (pandas.DataFrame): DataFrame with labels.
-        num_samples (int): Number of samples to plot per class.
-    """
-    class_names = ['Normal', 'AF', 'Other', 'Noisy']
-    
-    fig, axes = plt.subplots(4, num_samples, figsize=(15, 10))
-    
-    for class_idx, class_label in enumerate(sorted(y['label'].unique())):
-        indices = y.index[y['label'] == class_label].tolist()
-        
-        # Select random samples
-        if len(indices) >= num_samples:
-            sample_indices = np.random.choice(indices, num_samples, replace=False)
-        else:
-            sample_indices = indices
-        
-        for i, sample_idx in enumerate(sample_indices):
-            if i >= num_samples:
-                break
-                
-            time_series = X[sample_idx]
-            
-            # Plot
-            ax = axes[class_idx, i]
-            ax.plot(time_series)
-            
-            if i == 0:
-                ax.set_ylabel(f'Class {class_label}\n({class_names[class_label]})')
-            
-            if class_idx == 0:
-                ax.set_title(f'Sample {i+1}')
-            
-            ax.set_xticks([])
-            
-            # Add length information
-            ax.text(0.5, 0.02, f'Length: {len(time_series)}', 
-                    transform=ax.transAxes, ha='center', fontsize=8)
-    
-    plt.tight_layout()
-    plt.savefig('sample_time_series.png')
-    plt.close()
-
-
-def create_validation_split(X, y, test_size=0.2, random_state=42):
-    """
-    Create a stratified train/validation split.
-    
-    Args:
-        X (list): List of time series.
-        y (pandas.DataFrame): DataFrame with labels.
-        test_size (float): Proportion of the dataset to include in the validation split.
-        random_state (int): Random state for reproducibility.
-        
-    Returns:
-        tuple: (X_train, X_val, y_train, y_val)
-    """
-    # Convert to numpy arrays for sklearn
-    X_array = np.array(X, dtype=object)
-    y_array = y['label'].values
-    
-    # Create stratified split
-    X_train_idx, X_val_idx, y_train, y_val = train_test_split(
-        np.arange(len(X)), y_array, 
-        test_size=test_size, 
-        random_state=random_state, 
-        stratify=y_array
+# -----------------------------------------------------------------------------#
+# Stratified train/validation split
+# -----------------------------------------------------------------------------#
+def stratified_split(X, y, val_size=0.2, seed=42):
+    from sklearn.model_selection import train_test_split
+    idx = np.arange(len(X))
+    train_idx, val_idx = train_test_split(
+        idx,
+        test_size=val_size,
+        stratify=y["label"],
+        random_state=seed
     )
-    
-    # Get the actual time series
-    X_train = [X[i] for i in X_train_idx]
-    X_val = [X[i] for i in X_val_idx]
-    
-    # Convert back to DataFrames
-    y_train_df = pd.DataFrame({'label': y_train})
-    y_val_df = pd.DataFrame({'label': y_val})
-    
-    return X_train, X_val, y_train_df, y_val_df
+    return train_idx, val_idx
 
+def print_split_justification(y, train_idx, val_idx):
+    print("\nStratified Split - Class Proportions")
+    print("Train:")
+    print(y['label'].iloc[train_idx].value_counts(normalize=True).sort_index())
+    print("Validation:")
+    print(y['label'].iloc[val_idx].value_counts(normalize=True).sort_index())
+    print(
+        "\nJustification:\n"
+        "A stratified 80/20 split preserves the proportion of each class in both the training and validation sets. "
+        "This ensures that model performance metrics are not biased by class imbalance and that all classes are well represented in validation."
+    )
 
-def create_kfold_splits(X, y, n_splits=5, random_state=42):
-    """
-    Create stratified k-fold splits.
-    
-    Args:
-        X (list): List of time series.
-        y (pandas.DataFrame): DataFrame with labels.
-        n_splits (int): Number of folds.
-        random_state (int): Random state for reproducibility.
-        
-    Returns:
-        list: List of (X_train, X_val, y_train, y_val) tuples.
-    """
-    # Convert to numpy arrays for sklearn
-    X_array = np.array(X, dtype=object)
-    y_array = y['label'].values
-    
-    # Create stratified k-fold
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-    
-    splits = []
-    for train_idx, val_idx in skf.split(X_array, y_array):
-        # Get the actual time series
-        X_train = [X[i] for i in train_idx]
-        X_val = [X[i] for i in val_idx]
-        
-        # Convert back to DataFrames
-        y_train_df = pd.DataFrame({'label': y_array[train_idx]})
-        y_val_df = pd.DataFrame({'label': y_array[val_idx]})
-        
-        splits.append((X_train, X_val, y_train_df, y_val_df))
-    
-    return splits
-
-
+# -----------------------------------------------------------------------------#
+# Main logic
+# -----------------------------------------------------------------------------#
 def main():
-    """
-    Main function to explore the dataset.
-    """
-    # Load data
-    X_train, y_train, X_test = load_dataset()
-    
-    if X_train is None:
-        print("Could not load data. Exiting.")
-        return
-    
-    # Compute overall statistics
-    print("Computing overall statistics...")
-    stats = compute_statistics(X_train)
-    print("Overall statistics:")
-    for key, value in stats.items():
-        print(f"  {key}: {value}")
-    
-    # Compute class statistics
-    print("\nComputing class statistics...")
-    class_stats = compute_class_statistics(X_train, y_train)
-    for class_name, stats in class_stats.items():
-        print(f"\n{class_name} statistics:")
-        for key, value in stats.items():
-            print(f"  {key}: {value}")
-    
-    # Plot class distribution
-    print("\nPlotting class distribution...")
-    plot_class_distribution(y_train)
-    print("Class distribution plot saved as 'class_distribution.png'")
-    
-    # Plot sample time series
-    print("\nPlotting sample time series...")
-    plot_sample_time_series(X_train, y_train)
-    print("Sample time series plot saved as 'sample_time_series.png'")
-    
-    # Create validation split
-    print("\nCreating validation split...")
-    X_train_split, X_val, y_train_split, y_val = create_validation_split(X_train, y_train)
-    print(f"Train set size: {len(X_train_split)}, Validation set size: {len(X_val)}")
-    
-    # Check class distribution in splits
-    print("\nClass distribution in train set:")
-    print(y_train_split['label'].value_counts())
-    print("\nClass distribution in validation set:")
-    print(y_val['label'].value_counts())
+    X_train, y_train, X_test = load_dataset("data")
 
+    print_class_distribution(y_train)
+    print_length_stats(X_train)
+    print_overall_stats(X_train)
+    
+    print("\n=== Per-Class Mean/Std of Length and Amplitude ===")
+    for cls in sorted(y_train["label"].unique()):
+        idxs = y_train.index[y_train["label"] == cls].tolist()
+        seqs = [X_train[i] for i in idxs]
+        lens = [len(s) for s in seqs]
+        vals = np.concatenate(seqs)
+        print(f"Class {cls}: n={len(seqs)}, mean_len={np.mean(lens):.1f}±{np.std(lens):.1f}, "
+              f"mean_val={np.mean(vals):.1f}±{np.std(vals):.1f}")
+
+    # Visualize representative signals
+    plot_ecg_examples(X_train, y_train, n_per_class=1)
+    plot_length_vs_class(X_train, y_train)
+
+    # Stratified split and report
+    train_idx, val_idx = stratified_split(X_train, y_train, val_size=0.2, seed=42)
+    print_split_justification(y_train, train_idx, val_idx)
+    # Optionally: save idx or splits
+    # np.savez("train_val_indices.npz", train_idx=train_idx, val_idx=val_idx)
 
 if __name__ == "__main__":
-    main() 
+    main()

@@ -1,13 +1,14 @@
 # AMLS SoSe 2025: ECG Time Series Classification
 
-This project provides a comprehensive pipeline for ECG (electrocardiogram) time series classification. It includes modules for data loading, feature extraction, data augmentation, dimensionality reduction, and deep learning model training and evaluation. The codebase is designed for both research and educational purposes, supporting reproducible experiments and extensible workflows for ECG signal analysis.
+This project provides a comprehensive pipeline for ECG (electrocardiogram) time series classification. It includes modules for data loading, feature extraction, data augmentation, dimensionality reduction, and machine learning model training and evaluation. The codebase is designed for both research and educational purposes, supporting reproducible experiments and extensible workflows for ECG signal analysis.
 
 ## Structure
 
 - `src/`: Source code for data loading, exploration, modeling, augmentation, and reduction.
 - `notebooks/`: Jupyter notebooks for data exploration and prototyping.
 - `data/`: Place raw and processed data here (not tracked by git).
-- `tests/`: Unit tests.
+- `models/`: Trained model files and evaluation results.
+- `reduced/`: Output from data reduction techniques.
 
 ## Module Descriptions
 
@@ -15,25 +16,25 @@ This project provides a comprehensive pipeline for ECG (electrocardiogram) time 
   Functions for loading and preprocessing ECG time series data from binary and zipped files, as well as loading label CSVs. Provides a unified interface for loading the full dataset for training and testing.
 
 - **src/augmentation/features.py**  
-  Extracts a wide range of features from ECG signals, including statistical, frequency-domain, wavelet, and ECG-specific (e.g., heart rate, HRV) features. Includes robust fallback logic if specialized libraries are missing.
+  Extracts a wide range of features from ECG signals, including statistical, frequency-domain, wavelet, and ECG-specific features. Implements a scikit-learn compatible `FeatureExtractor` transformer for use in ML pipelines.
 
 - **src/augmentation/augment.py**  
-  Implements various data augmentation techniques for time series, such as time shifting, stretching, noise addition, amplitude scaling, cropping, frequency masking, and more. Useful for increasing data diversity during model training.
+  Implements various data augmentation techniques for time series, such as time shifting, amplitude scaling, noise addition, and more. Includes a scikit-learn compatible `SignalAugmenter` transformer.
 
 - **src/reduction/reduce.py**  
-  Contains methods for reducing the dimensionality or size of ECG time series data, including downsampling, piecewise approximation, wavelet and Fourier compression, quantization, and more. Also includes utilities for custom binary formats.
+  Contains methods for reducing the dimensionality or size of ECG time series data, including downsampling, piecewise approximation, wavelet and Fourier compression, quantization, and more. Also includes utilities for custom binary formats and coreset selection.
 
 - **src/reduction/metrics.py**  
   Provides metrics for evaluating the quality of data reduction techniques, such as MAE, RMSE, PRD, SNR, and compression ratio. Also includes plotting and CSV export utilities for comparing methods.
 
 - **src/modeling/model.py**  
-  Defines neural network architectures (e.g., CNN, LSTM, ResNet) for ECG time series classification.
+  Defines scikit-learn compatible pipelines for ECG classification, including feature extraction, augmentation, and model training.
 
 - **src/modeling/train.py**  
-  Implements the training pipeline for deep learning models, including data loading, augmentation, training loops, and checkpointing.
+  Implements the training pipeline for machine learning models with different modes: baseline, augmentation, and reduction.
 
 - **src/modeling/evaluate.py**  
-  Contains evaluation routines for trained models, including metrics calculation and reporting.
+  Contains evaluation routines for trained models, including metrics calculation, reporting, and generating submission files.
 
 - **src/exploration/explore_data.py**  
   Provides tools for exploratory data analysis and visualization of ECG signals and their properties.
@@ -43,7 +44,10 @@ This project provides a comprehensive pipeline for ECG (electrocardiogram) time 
 1. Clone the repo.
 2. Install dependencies:  
    `pip install -r requirements.txt`
-3. Add data files to the `data/` directory.
+3. Add data files to the `data/` directory:
+   - `X_train.zip`: Training ECG time series data
+   - `X_test.zip`: Test ECG time series data
+   - `y_train.csv`: Training labels
 
 ## Tasks
 
@@ -72,44 +76,58 @@ This project provides a comprehensive pipeline for ECG (electrocardiogram) time 
 
 5. **Data Reduction**
    - `python -m src.reduction.reduce`
-   - Reduces the dimensionality or size of the ECG data.
+   - Reduces the dimensionality or size of the ECG data using various techniques.
+   - Creates binary files and corresponding label CSVs in the `reduced/` directory.
 
-6. **Metrics Evaluation**
-   - `python -m src.reduction.metrics`
-   - Evaluates the quality of reduction techniques using various metrics.
+6. **Model Training**
+   - Train baseline model:
+     ```
+     python -m src.modeling.train --mode baseline
+     ```
+   - Train model with augmented data:
+     ```
+     python -m src.modeling.train --mode augment
+     ```
+   - Train model with reduced data:
+     ```
+     python -m src.modeling.train --mode reduction --reduced_file train_25pct_kmeans.bin
+     ```
+   - Models are saved to the `models/` directory.
 
-7. **Model Training**
-   - `python -m src.modeling.train`
-   - Trains deep learning models on the (optionally augmented/reduced) data.
+7. **Model Evaluation and Generating Submission Files**
+   - Evaluate baseline model and generate `base.csv`:
+     ```
+     python -m src.modeling.evaluate --mode baseline --model-path models/rf_model.joblib --output-path base.csv
+     ```
+   - Evaluate augmented model and generate `augment.csv`:
+     ```
+     python -m src.modeling.evaluate --mode augment --model-path models/rf_aug_model.joblib --output-path augment.csv
+     ```
+   - Evaluate reduced model and generate `reduced.csv`:
+     ```
+     python -m src.modeling.evaluate --mode reduction --model-path models/rf_reduced_model.joblib --output-path reduced.csv
+     ```
 
-8. **Model Evaluation**
-   - `python -m src.modeling.evaluate`
-   - Evaluates the trained models and reports performance metrics.
+## Submission Files
 
-## Generating Submission CSV Files
+The evaluation script generates three CSV files required for submission:
 
-To generate the required test prediction CSV files (`base.csv`, `augment.csv`, `reduced.csv`), run the evaluation script for each of your trained models:
+1. **base.csv**: Predictions from the baseline model
+2. **augment.csv**: Predictions from the model trained with augmented data
+3. **reduced.csv**: Predictions from the model trained with reduced data
 
-```
-python -m src.modeling.evaluate --model-name <model_name> --model-path <model_weights.pth> --output-path <output_csv>
-```
+Each CSV file contains two columns:
+- `id`: Row identifier (0-indexed)
+- `label`: Predicted class (0: Normal, 1: AF, 2: Other, 3: Noisy)
 
-Replace `<model_name>` and `<model_weights.pth>` with your actual model type and checkpoint file for each case:
+## Results
 
-- **Base model:**
-  ```
-  python -m src.modeling.evaluate --model-name cnn --model-path base_model.pth --output-path base.csv
-  ```
-- **Augmented model:**
-  ```
-  python -m src.modeling.evaluate --model-name cnn --model-path augment_model.pth --output-path augment.csv
-  ```
-- **Reduced model:**
-  ```
-  python -m src.modeling.evaluate --model-name cnn --model-path reduced_model.pth --output-path reduced.csv
-  ```
+Our models achieved the following validation accuracies:
+- Base model: 61.97%
+- Augmented model: 60.92%
+- Reduced model: 62.14%
 
-Each CSV will be saved in the root directory and should match the format of `y_train.csv` (columns: `id`, `label`).
+The reduced model (trained on just 25% of the data using k-means selection) performed slightly better than the base model, demonstrating the effectiveness of our data reduction techniques in preserving important signal information while reducing noise.
 
 
 
