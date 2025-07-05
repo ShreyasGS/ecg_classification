@@ -175,13 +175,9 @@ Our models achieved the following validation accuracies:
 
 The reduced model (trained on just 25% of the data using k-means selection) performed slightly better than the base model, demonstrating the effectiveness of our data reduction techniques in preserving important signal information while reducing noise.
 
-```
-```
-
-
 ## 2. Dataset Exploration
 
-## 1.1 Dataset Exploration
+## 2.1 Dataset Exploration
 
 ### Overview
 
@@ -215,228 +211,11 @@ The dataset is imbalanced, with class 0 (normal) being the majority class and cl
 - **Standard deviation:** 3,292 samples
 - **Min length:** 2,714 samples
 - **Max length:** 18,286 samples
-# ECG Time Series Classification: Comprehensive Report
 
-## 1. Introduction
-
-
-
-This report presents a comprehensive analysis of our ECG time series classification project, which aims to classify ECG signals into four categories: Normal (0), Atrial Fibrillation (1), Other Rhythm (2), and Noisy (3). We explore various aspects of the project, including model architectures, machine learning pipelines, data augmentation techniques, and data reduction strategies.
-
-## 1.1 How to Run the Code
-
-### Project Structure
-
-- `src/`: Source code for data loading, exploration, modeling, augmentation, and reduction.
-- `notebooks/`: Jupyter notebooks for data exploration and prototyping.
-- `data/`: Place raw and processed data here (not tracked by git).
-- `models/`: Trained model files and evaluation results.
-- `reduced/`: Output from data reduction techniques.
-
-### Module Descriptions
-
-- **src/data_loading.py**  
-  Functions for loading and preprocessing ECG time series data from binary and zipped files, as well as loading label CSVs. Provides a unified interface for loading the full dataset for training and testing.
-
-- **src/augmentation/features.py**  
-  Extracts a wide range of features from ECG signals, including statistical, frequency-domain, wavelet, and ECG-specific features. Implements a scikit-learn compatible `FeatureExtractor` transformer for use in ML pipelines.
-
-- **src/augmentation/augment.py**  
-  Implements various data augmentation techniques for time series, such as time shifting, amplitude scaling, noise addition, and more. Includes a scikit-learn compatible `SignalAugmenter` transformer.
-
-- **src/reduction/reduce.py**  
-  Contains methods for reducing the dimensionality or size of ECG time series data, including downsampling, piecewise approximation, wavelet and Fourier compression, quantization, and more. Also includes utilities for custom binary formats and coreset selection.
-
-- **src/reduction/metrics.py**  
-  Provides metrics for evaluating the quality of data reduction techniques, such as MAE, RMSE, PRD, SNR, and compression ratio. Also includes plotting and CSV export utilities for comparing methods.
-
-- **src/modeling/model.py**  
-  Defines scikit-learn compatible pipelines for ECG classification, including feature extraction, augmentation, and model training.
-
-- **src/modeling/train.py**  
-  Implements the training pipeline for machine learning models with different modes: baseline, augmentation, and reduction.
-
-- **src/modeling/evaluate.py**  
-  Contains evaluation routines for trained models, including metrics calculation, reporting, and generating submission files.
-
-- **src/exploration/explore_data.py**  
-  Provides tools for exploratory data analysis and visualization of ECG signals and their properties.
-
-### Setup
-
-1. Clone the repo.
-2. Install dependencies:  
-```
-
-pip install -r requirements.txt
-
-````
-3. Add data files to the `data/` directory:
- - `X_train.zip`: Training ECG time series data
- - `X_test.zip`: Test ECG time series data
- - `y_train.csv`: Training labels
-
-### Tasks
-
-- Data exploration and visualization
-- Model training and evaluation
-- Data augmentation and feature engineering
-- Data reduction and analysis
-
-### How to Run (Recommended Order)
-
-#### Data Loading
-
-```bash
-python src/data_loading.py
-````
-
-Loads and checks your ECG data and labels.
-
-#### Exploratory Data Analysis
-
-```bash
-python -m src.exploration.explore_data
-```
-
-Visualizes and explores the raw ECG signals and label distributions.
-
-#### Feature Extraction
-
-```bash
-python -m src.augmentation.features
-```
-
-Extracts statistical, frequency, wavelet, and ECG-specific features.
-
-#### Data Augmentation
-
-```bash
-python -m src.augmentation.augment
-```
-
-Applies augmentation techniques to increase data diversity.
-
-#### Data Reduction
-
-```bash
-python -m src.reduction.reduce
-```
-
-Reduces the dimensionality or size of the ECG data using various techniques.
-Creates binary files and corresponding label CSVs in the `reduced/` directory.
-
-#### Model Training
-
-Train baseline model:
-
-```bash
-python -m src.modeling.train --mode baseline
-```
-
-Train model with augmented data:
-
-```bash
-python -m src.modeling.train --mode augment
-```
-
-Train model with reduced data:
-
-```bash
-python -m src.modeling.train --mode reduction --reduced_file train_25pct_kmeans.bin
-```
-
-Models are saved to the `models/` directory.
-
-#### Model Evaluation and Generating Submission Files
-
-Evaluate baseline model and generate `base.csv`:
-
-```bash
-python -m src.modeling.evaluate --mode baseline --model-path models/rf_model.joblib --output-path base.csv
-```
-
-Evaluate augmented model and generate `augment.csv`:
-
-```bash
-python -m src.modeling.evaluate --mode augment --model-path models/rf_aug_model.joblib --output-path augment.csv
-```
-
-Evaluate reduced model and generate `reduced.csv`:
-
-```bash
-python -m src.modeling.evaluate --mode reduction --model-path models/rf_reduced_model.joblib --output-path reduced.csv --reduced_file train_25pct_kmeans.bin --reduced_test_file test_25pct_kmeans.bin
-```
-
-### Submission Files
-
-The evaluation script generates three CSV files required for submission:
-
-* **base.csv**: Predictions from the baseline model
-* **augment.csv**: Predictions from the model trained with augmented data
-* **reduced.csv**: Predictions from the model trained with reduced data
-
-Each CSV file contains two columns:
-
-* `id`: Row identifier (0-indexed)
-* `label`: Predicted class (0: Normal, 1: AF, 2: Other, 3: Noisy)
-
-### Results
-
-Our models achieved the following validation accuracies:
-
-* Base model: 61.97%
-* Augmented model: 60.92%
-* Reduced model: 62.14%
-
-The reduced model (trained on just 25% of the data using k-means selection) performed slightly better than the base model, demonstrating the effectiveness of our data reduction techniques in preserving important signal information while reducing noise.
-
-```
-```
-
-
-## 2. Dataset Exploration
-
-## 1.1 Dataset Exploration
-
-### Overview
-
-The dataset for ECG classification consists of 6,179 univariate time series, each labeled as one of four classes:
-
-- **Class 0:** Normal rhythm
-- **Class 1:** Atrial Fibrillation (AF)
-- **Class 2:** Other rhythms (neither normal nor AF)
-- **Class 3:** Noisy or unclassifiable signals
-
----
-
-### Class Distribution
-
-The class distribution in the dataset is as follows:
-
-| Class | Count | Proportion |
-|-------|-------|------------|
-| 0 (Normal)         | 3,638 | 0.59 |
-| 1 (AF)             | 549   | 0.09 |
-| 2 (Other rhythms)  | 1,765 | 0.29 |
-| 3 (Noisy/Unknown)  | 227   | 0.04 |
-
-The dataset is imbalanced, with class 0 (normal) being the majority class and class 3 (noisy) the minority.
-
----
-
-### Sequence Length Statistics
-
-- **Mean length:** 9,760 samples
-- **Standard deviation:** 3,292 samples
-- **Min length:** 2,714 samples
-- **Max length:** 18,286 samples
-- **Median (50th percentile):** 9,000 samples
-- **25th/75th percentiles:** 9,000 samples / 9,000 samples
 
 Most sequences are of length 9,000, but some are much shorter or longer.
 
-![Violin plot of sequence length by class](figure_exploration_1_classes.png)  
+![Violin plot of sequence length by class](src/vio.png)  
 *Figure 1: Distribution of ECG sequence lengths for each class.*
 
 ---
@@ -468,7 +247,7 @@ Class 3 (noisy) signals are generally shorter and have much higher amplitude var
 
 Below are representative examples of signals from each class.
 
-![Example ECG time series from each class](figure_2_exploration_sequence_length.png)  
+![Example ECG time series from each class](src/class.png)  
 *Figure 2: Example ECG time series from each class.*
 
 ---
@@ -523,7 +302,7 @@ y_train_split = y_train.iloc[train_idx]
 X_val_split = [X_train[i] for i in val_idx]
 y_val_split = y_train.iloc[val_idx]
 
-```python
+```
 Explanation:
 
 train_test_split randomly partitions the indices of the data into training and validation sets, while maintaining the same class proportions in each set (due to the stratify=y_train["label"] argument).
